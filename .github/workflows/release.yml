@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - wally.toml
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rokit tools
+        uses: CompeyDev/setup-rokit@v0.1.2
+
+      - name: Read package version
+        id: package
+        shell: pwsh
+        run: |
+          $wallyToml = Get-Content -Raw -LiteralPath "wally.toml"
+
+          if ($wallyToml -notmatch '(?m)^\s*version\s*=\s*"(?<version>\d+\.\d+\.\d+)"') {
+            throw "wally.toml must contain a semver package version like version = `"2.0.0`"."
+          }
+
+          $version = $Matches.version
+          $tag = "v$version"
+
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Stop if tag already exists
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.package.outputs.tag }}"
+          git ls-remote --exit-code --tags origin "refs/tags/$tag"
+
+          if ($LASTEXITCODE -eq 0) {
+            throw "Tag $tag already exists."
+          }
+
+          if ($LASTEXITCODE -ne 2) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Install Wally packages
+        shell: pwsh
+        run: wally install
+
+      - name: Build plugin
+        shell: pwsh
+        run: ./scripts/build.ps1
+
+      - name: Create version tag
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.package.outputs.tag }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag $tag $env:GITHUB_SHA
+          git push origin $tag
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.package.outputs.tag }}"
+          gh release create $tag `
+            "build/codekit-plugin.rbxm" `
+            --title $tag `
+            --notes "CodeKit $tag"
