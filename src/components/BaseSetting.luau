@@ -18,7 +18,6 @@ const DESCRIPTIONS = {
 	Semicolons = "Add semicolons to generated statements.",
 	["Duckable Mode"] = "Preserve your existing import order and append new imports beneath the current import block, based on duckable's preferences.",
 	["String Quote"] = "Choose quotes for generated strings.",
-	["Call Style"] = "Choose parentheses or bare require calls.",
 	Keyword = "Choose whether generated declarations use local or const.",
 	["Require Mode"] = "Choose local or global require paths.",
 	["Sort Order"] = "Choose how generated imports are ordered.",

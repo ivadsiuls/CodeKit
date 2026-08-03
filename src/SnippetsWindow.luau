@@ -25,8 +25,8 @@ type Scope = "global" | "workspace"
 type Store = {
 	changed: RBXScriptSignal,
 	get: (Scope?) -> { Snippet },
-	add: (Scope, string, { string }, string) -> Snippet,
-	update: (Scope, string, string, { string }, string) -> (),
+	add: (Scope, string, { string }, string) -> Snippet?,
+	update: (Scope, string, string, { string }, string) -> boolean,
 	remove: (Scope, string) -> (),
 	duplicate: (Scope, string) -> (),
 	toggleFavorite: (Scope, string) -> (),
@@ -34,7 +34,6 @@ type Store = {
 }
 
 const WIDGET_ID = "codekit-snippets"
-const EDIT_MODULE_NAME = "_CODEKIT_SNIPPET_EDIT"
 const BUTTON_HEIGHT = 32
 const ROW_HEIGHT = 34
 const NAME_COLUMN = 0.22
@@ -161,6 +160,7 @@ end
 const function createPanel(parent: Instance, store: Store)
 	local editModule: ModuleScript? = nil
 	local editingSnippet: Snippet? = nil
+	local editingScope: Scope? = nil
 	local editingAliases: { string } = {}
 	local nameBox: TextBox
 	local aliasesBox: TextBox
@@ -216,6 +216,7 @@ const function createPanel(parent: Instance, store: Store)
 	const function beginEditing(name: string, aliases: { string }, existing: Snippet?)
 		cleanupEditModule()
 		editingSnippet = existing
+		editingScope = activeScope()
 		editingAliases = table.clone(aliases)
 
 		const module = Instance.new("ModuleScript")
@@ -235,7 +236,9 @@ const function createPanel(parent: Instance, store: Store)
 		end
 
 		const success, message = ScriptEditorService:OpenScriptDocumentAsync(editModule)
-		assert(success, message)
+		if not success then
+			warn(`Failed to open snippet editor: {message}`)
+		end
 	end
 
 	const function finishEditing()
@@ -251,7 +254,15 @@ const function createPanel(parent: Instance, store: Store)
 		module.Name = editingNameBox.Text
 		editingAliases = parseAliases(editingAliasesBox.Text)
 		local document = ScriptEditorService:FindScriptDocument(module)
-		const sourceText = if document == nil then module.Source else ScriptEditorService:GetEditorSource(module)
+		local sourceText = module.Source
+		if document ~= nil then
+			local ok, editorSource = pcall(function()
+				return ScriptEditorService:GetEditorSource(module)
+			end)
+			if ok and editorSource ~= "" then
+				sourceText = editorSource
+			end
+		end
 		if document ~= nil then
 			const success, message = document:CloseAsync()
 			if not success then
@@ -260,14 +271,24 @@ const function createPanel(parent: Instance, store: Store)
 		end
 
 		const snippet = editingSnippet
+		const scope = editingScope
+		if scope == nil then
+			return
+		end
+		local saved = false
 		if snippet == nil then
-			store.add(activeScope(), module.Name, editingAliases, sourceText)
+			saved = store.add(scope, module.Name, editingAliases, sourceText) ~= nil
 		else
-			store.update(activeScope(), snippet.id, module.Name, editingAliases, sourceText)
+			saved = store.update(scope, snippet.id, module.Name, editingAliases, sourceText)
+		end
+		if not saved then
+			warn("Snippet is too large or the snippet limit has been reached.")
+			return
 		end
 
 		cleanupEditModule()
 		editingSnippet = nil
+		editingScope = nil
 		editingAliases = {}
 		editingVisible(false)
 		refresh()
@@ -304,7 +325,7 @@ const function createPanel(parent: Instance, store: Store)
 				createColumnSeparator(NAME_COLUMN + ALIASES_COLUMN + EDIT_COLUMN + DUPLICATE_COLUMN),
 				new("TextLabel")({
 					Name = "Name",
-					Size = UDim2.new(NAME_COLUMN, 0, 1, 0),
+					Size = UDim2.fromScale(NAME_COLUMN, 1),
 					BackgroundTransparency = 1,
 					Text = "",
 					TextColor3 = UiTheme.TEXT,
@@ -316,7 +337,7 @@ const function createPanel(parent: Instance, store: Store)
 				}),
 				new("TextLabel")({
 					Name = "Aliases",
-					Size = UDim2.new(ALIASES_COLUMN, 0, 1, 0),
+					Size = UDim2.fromScale(ALIASES_COLUMN, 1),
 					Position = UDim2.fromScale(NAME_COLUMN, 0),
 					BackgroundTransparency = 1,
 					Text = "",
@@ -533,7 +554,7 @@ const function createPanel(parent: Instance, store: Store)
 						createColumnSeparator(NAME_COLUMN + ALIASES_COLUMN + EDIT_COLUMN + DUPLICATE_COLUMN),
 						new("TextLabel")({
 							Name = "Name",
-							Size = UDim2.new(NAME_COLUMN, 0, 1, 0),
+							Size = UDim2.fromScale(NAME_COLUMN, 1),
 							BackgroundTransparency = 1,
 							Text = "Name",
 							TextColor3 = UiTheme.TEXT,
@@ -542,7 +563,7 @@ const function createPanel(parent: Instance, store: Store)
 						}),
 						new("TextLabel")({
 							Name = "Aliases",
-							Size = UDim2.new(ALIASES_COLUMN, 0, 1, 0),
+							Size = UDim2.fromScale(ALIASES_COLUMN, 1),
 							Position = UDim2.fromScale(NAME_COLUMN, 0),
 							BackgroundTransparency = 1,
 							Text = "Aliases",

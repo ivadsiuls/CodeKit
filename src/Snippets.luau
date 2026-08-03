@@ -14,8 +14,8 @@ export type Scope = "global" | "workspace"
 export type Store = {
 	changed: RBXScriptSignal,
 	get: (Scope?) -> { Snippet },
-	add: (Scope, string, { string }, string) -> Snippet,
-	update: (Scope, string, string, { string }, string) -> (),
+	add: (Scope, string, { string }, string) -> Snippet?,
+	update: (Scope, string, string, { string }, string) -> boolean,
 	remove: (Scope, string) -> (),
 	duplicate: (Scope, string) -> (),
 	toggleFavorite: (Scope, string) -> (),
@@ -25,6 +25,10 @@ export type Store = {
 
 const GLOBAL_SETTING_KEY = "CodeKitSnippets"
 const WORKSPACE_SNIPPETS_NAME = "_CODEKIT_SNIPPETS"
+const MAX_SNIPPETS = 500
+const MAX_SNIPPET_NAME_LENGTH = 128
+const MAX_SNIPPET_ALIAS_LENGTH = 128
+const MAX_SNIPPET_SOURCE_LENGTH = 100_000
 
 const function cloneAliases(aliases: { string }): { string }
 	const cloned = {}
@@ -57,7 +61,7 @@ const function normalizeAliases(value: any): { string }
 		end
 
 		const alias = string.gsub(rawAlias, "^%s*(.-)%s*$", "%1")
-		if alias == "" or seen[alias] == true then
+		if alias == "" or #alias > MAX_SNIPPET_ALIAS_LENGTH or seen[alias] == true then
 			continue
 		end
 
@@ -73,16 +77,34 @@ const function normalizeSnippets(value: any): { Snippet }
 	end
 
 	const snippets = {}
+	const seenIds = {}
 	for _, item in value do
+		if #snippets >= MAX_SNIPPETS then
+			break
+		end
 		if typeof(item) ~= "table" or typeof(item.name) ~= "string" or item.name == "" then
 			continue
 		end
+		if #item.name > MAX_SNIPPET_NAME_LENGTH then
+			continue
+		end
+
+		local source = if typeof(item.source) == "string" then item.source else ""
+		if #source > MAX_SNIPPET_SOURCE_LENGTH then
+			continue
+		end
+
+		local id = if typeof(item.id) == "string" and item.id ~= "" then item.id else HttpService:GenerateGUID(false)
+		if seenIds[id] == true then
+			id = HttpService:GenerateGUID(false)
+		end
+		seenIds[id] = true
 
 		table.insert(snippets, {
-			id = if typeof(item.id) == "string" and item.id ~= "" then item.id else HttpService:GenerateGUID(false),
+			id = id,
 			name = item.name,
 			aliases = normalizeAliases(item.aliases),
-			source = if typeof(item.source) == "string" then item.source else "",
+			source = source,
 			favorite = item.favorite == true,
 		})
 	end
@@ -153,8 +175,14 @@ const function create(plugin: Plugin): Store
 			end
 			return cloneSnippets(getScopeList(scope))
 		end,
-		add = function(scope: Scope, name: string, aliases: { string }, source: string): Snippet
+		add = function(scope: Scope, name: string, aliases: { string }, source: string): Snippet?
 			const snippets = getScopeList(scope)
+			if name == "" or #name > MAX_SNIPPET_NAME_LENGTH or #source > MAX_SNIPPET_SOURCE_LENGTH then
+				return nil
+			end
+			if #snippets >= MAX_SNIPPETS then
+				return nil
+			end
 			const snippet = {
 				id = HttpService:GenerateGUID(false),
 				name = name,
@@ -167,7 +195,10 @@ const function create(plugin: Plugin): Store
 			save(scope)
 			return cloneSnippet(snippet)
 		end,
-		update = function(scope: Scope, id: string, name: string, aliases: { string }, source: string)
+		update = function(scope: Scope, id: string, name: string, aliases: { string }, source: string): boolean
+			if name == "" or #name > MAX_SNIPPET_NAME_LENGTH or #source > MAX_SNIPPET_SOURCE_LENGTH then
+				return false
+			end
 			const snippets = getScopeList(scope)
 			for _, snippet in snippets do
 				if snippet.id == id then
@@ -175,9 +206,10 @@ const function create(plugin: Plugin): Store
 					snippet.aliases = normalizeAliases(aliases)
 					snippet.source = source
 					save(scope)
-					return
+					return true
 				end
 			end
+			return false
 		end,
 		remove = function(scope: Scope, id: string)
 			const snippets = getScopeList(scope)
@@ -191,6 +223,9 @@ const function create(plugin: Plugin): Store
 		end,
 		duplicate = function(scope: Scope, id: string)
 			const snippets = getScopeList(scope)
+			if #snippets >= MAX_SNIPPETS then
+				return
+			end
 			for _, snippet in snippets do
 				if snippet.id == id then
 					table.insert(snippets, {

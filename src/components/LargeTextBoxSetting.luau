@@ -18,7 +18,7 @@ export type Props = {
 const function LargeTextBoxSetting(props: Props): TextBox
 	local container = new("Frame")({
 		Name = props.name,
-		Size = UDim2.new(1, 0, 0, 0),
+		Size = UDim2.fromScale(1, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		BackgroundTransparency = 1,
 		Parent = props.parent,

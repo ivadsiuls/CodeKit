@@ -40,6 +40,11 @@ type WindowResources = {
 	refactorQueue: any,
 }
 
+type SettingsSection = {
+	title: string,
+	section: any,
+}
+
 const WIDGET_ID = "codekit-settings"
 const BACK_ICON = "rbxassetid://6031091004"
 
@@ -110,7 +115,6 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 	local contentFrame: Frame
 	local footerFrame: Frame
 	local titleLabel: TextLabel
-	local backButton: ImageButton
 	local additionalServicesBox: TextBox
 	local customServiceAliasesBox: TextBox
 	local clientDirectoriesBox: TextBox
@@ -118,9 +122,12 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 	local noImportTagBox: TextBox
 	local customNameAttributeBox: TextBox
 	local autocompletePrefixBox: TextBox
+	local settingsSearchBox: TextBox
+	local settingsSearchFrame: Frame
 	local toggles = {}
 	local dropdowns = {}
 	local sectionDropdowns = {}
+	local settingsSections: { SettingsSection } = {}
 	local activePanel = nil
 	local activePage = "settings"
 	local destroyPageRoot: (() -> ())? = nil
@@ -137,6 +144,7 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 	const currentSettings = source(if initialScope == "global" then store.getGlobal() else store.getWorkspace())
 	const renderTick = source(0)
 	const resetSettingsVisible = source(false)
+	const settingsSearchQuery = source("")
 
 	const function update(key: string, value: any)
 		store.update(activeScope(), key, value)
@@ -154,6 +162,51 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		end
 		for _, dropdown in sectionDropdowns do
 			dropdown.close()
+		end
+	end
+
+	const function registerSettingsSection(title: string, section): any
+		table.insert(settingsSections, {
+			title = title,
+			section = section,
+		})
+		return section
+	end
+
+	const function getSearchableText(instance: Instance): string
+		const spacedName = string.gsub(instance.Name, "([%l%d])([%u])", "%1 %2")
+		const parts = { spacedName }
+		for _, descendant in instance:GetDescendants() do
+			if descendant:IsA("TextLabel") or descendant:IsA("TextButton") or descendant:IsA("TextBox") then
+				table.insert(parts, descendant.Text)
+			end
+			if descendant:IsA("TextBox") then
+				table.insert(parts, descendant.PlaceholderText)
+			end
+		end
+		return string.lower(table.concat(parts, " "))
+	end
+
+	const function applySettingsSearch()
+		const query = string.lower(string.gsub(settingsSearchQuery(), "^%s*(.-)%s*$", "%1"))
+		const settings = currentSettings()
+		for _, record in settingsSections do
+			const sectionMatches = query ~= "" and string.find(string.lower(record.title), query, 1, true) ~= nil
+			local visibleRow = false
+			for _, child in record.section.body:GetChildren() do
+				if not child:IsA("GuiObject") then
+					continue
+				end
+
+				const rowEnabled = child.Name ~= "Folder Depth" or settings.autoFolders
+				const rowMatches = rowEnabled and (query == "" or sectionMatches or string.find(getSearchableText(child), query, 1, true) ~= nil)
+				child.Visible = rowMatches
+				visibleRow = visibleRow or rowMatches
+			end
+
+			const visible = query == "" or sectionMatches or visibleRow
+			record.section.header.Visible = visible
+			record.section.body.Visible = visible
 		end
 	end
 
@@ -283,6 +336,7 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		toggles = {}
 		dropdowns = {}
 		sectionDropdowns = {}
+		settingsSections = {}
 		additionalServicesBox = nil
 		customServiceAliasesBox = nil
 		clientDirectoriesBox = nil
@@ -293,19 +347,14 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 	end
 
 	const function createSectionSettings(parent: Instance, title: string, sectionName: string, withEnabled: boolean?)
-		const section = Section(parent, title, 0)
+		const section = registerSettingsSection(title, Section(parent, title, 0))
 		local index = 1
 		if withEnabled then
 			addSectionToggle(section, "Enabled", index, sectionName, "enabled")
 			index += 1
 		end
-		if sectionName ~= "definitions" then
-			addSectionToggle(section, "Use const", index, sectionName, "useConst")
-			index += 1
-		else
-			addSectionToggle(section, "Use const", index, sectionName, "useConst")
-			index += 1
-		end
+		addSectionToggle(section, "Use const", index, sectionName, "useConst")
+		index += 1
 		addSectionDropdown(section, "Casing", index, sectionName, "casing", CASING_OPTIONS)
 		index += 1
 
@@ -325,9 +374,10 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		clearContent()
 		titleLabel.Text = "  CodeKit"
 		scopeTabs.Visible = true
+		settingsSearchFrame.Visible = true
 		footerFrame.Visible = true
-		contentFrame.Position = UDim2.fromOffset(0, 121)
-		contentFrame.Size = UDim2.new(1, 0, 1, -165)
+		contentFrame.Position = UDim2.fromOffset(0, 159)
+		contentFrame.Size = UDim2.new(1, 0, 1, -203)
 
 		new("UIListLayout")({
 			FillDirection = Enum.FillDirection.Vertical,
@@ -343,7 +393,7 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 			Parent = contentFrame,
 		})
 
-		const miscellaneous = Section(contentFrame, "Miscellaneous", 0)
+		const miscellaneous = registerSettingsSection("Miscellaneous", Section(contentFrame, "Miscellaneous", 0))
 		addToggle(miscellaneous, "Enabled", 1, "enabled")
 		addToggle(miscellaneous, "Modules", 2, "autoModules")
 		addToggle(miscellaneous, "Services", 3, "autoServices")
@@ -355,15 +405,22 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		addToggle(miscellaneous, "Semicolons", 9, "semicolons")
 		addToggle(miscellaneous, "Duckable Mode", 10, "duckableMode")
 		addDropdown(miscellaneous, "String Quote", 11, "stringQuote", { "double", "single" })
-		addDropdown(miscellaneous, "Call Style", 12, "callStyle", { "parentheses", "bare" })
-		addDropdown(miscellaneous, "Default Require Mode", 13, "requireMode", { "local", "global" })
-		addDropdown(miscellaneous, "Sort Order", 14, "importSort", IMPORT_SORT_OPTIONS)
-		addDropdown(miscellaneous, "Folder Depth", 15, "importFolderDepth", { "First", "First Two", "All" })
-		addDropdown(miscellaneous, "Import Placement", 16, "importPlacement", { "Organized", "At Cursor" })
+		addDropdown(miscellaneous, "Default Require Mode", 12, "requireMode", { "local", "global" })
+		addDropdown(miscellaneous, "Sort Order", 13, "importSort", IMPORT_SORT_OPTIONS)
+		const folderDepth = addDropdown(miscellaneous, "Folder Depth", 14, "importFolderDepth", { "First", "First Two", "All" })
+		effect(function()
+			const foldersEnabled = currentSettings().autoFolders
+			folderDepth.setEnabled(foldersEnabled)
+			folderDepth.row.Visible = foldersEnabled
+			if not foldersEnabled then
+				folderDepth.close()
+			end
+		end)
+		addDropdown(miscellaneous, "Import Placement", 15, "importPlacement", { "Organized", "At Cursor" })
 		autocompletePrefixBox = TextBoxSetting({
 			parent = miscellaneous.body,
 			name = "Autocomplete Prefix",
-			index = 17,
+			index = 16,
 			focusLost = function()
 				update("autocompletePrefix", autocompletePrefixBox.Text)
 			end,
@@ -371,7 +428,7 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		noImportTagBox = TextBoxSetting({
 			parent = miscellaneous.body,
 			name = "No-import Tag",
-			index = 18,
+			index = 17,
 			focusLost = function()
 				update("noImportTag", noImportTagBox.Text)
 			end,
@@ -379,7 +436,7 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		customNameAttributeBox = TextBoxSetting({
 			parent = miscellaneous.body,
 			name = "Custom-Name Attribute",
-			index = 19,
+			index = 18,
 			focusLost = function()
 				update("customNameAttribute", customNameAttributeBox.Text)
 			end,
@@ -389,7 +446,7 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		createSectionSettings(contentFrame, "Services", "services", false)
 		createSectionSettings(contentFrame, "Modules", "modules", false)
 
-		const modulesAdvanced = Section(contentFrame, "Module Require", 0)
+		const modulesAdvanced = registerSettingsSection("Module Require", Section(contentFrame, "Module Require", 0))
 		addSectionToggle(modulesAdvanced, "Relative require-by-string", 1, "modules", "relativeRequireByString")
 		addSectionToggle(modulesAdvanced, "Absolute require-by-string", 2, "modules", "absoluteRequireByString")
 		addSectionDropdown(modulesAdvanced, "Server Scripts Require", 3, "modules", "serverScriptsRequire", MODULE_REQUIRE_OPTIONS)
@@ -400,12 +457,12 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		createSectionSettings(contentFrame, "Instances", "instances", false)
 		createSectionSettings(contentFrame, "Definitions", "definitions", true)
 
-		const indexing = Section(contentFrame, "Indexing", 0)
+		const indexing = registerSettingsSection("Indexing", Section(contentFrame, "Indexing", 0))
 		addDropdown(indexing, "Client Scripts", 1, "indexing.clientScripts", INDEXING_OPTIONS)
 		addDropdown(indexing, "Server Scripts", 2, "indexing.serverScripts", INDEXING_OPTIONS)
 		bindAutomaticSectionHeight(indexing)
 
-		const servicesSection = Section(contentFrame, "Custom Services", 0)
+		const servicesSection = registerSettingsSection("Custom Services", Section(contentFrame, "Custom Services", 0))
 		additionalServicesBox = LargeTextBoxSetting({
 			parent = servicesSection.body,
 			name = "AdditionalServices",
@@ -428,7 +485,7 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		})
 		bindAutomaticSectionHeight(servicesSection)
 
-		const contextSection = Section(contentFrame, "Context", 0)
+		const contextSection = registerSettingsSection("Context", Section(contentFrame, "Context", 0))
 		clientDirectoriesBox = LargeTextBoxSetting({
 			parent = contextSection.body,
 			name = "ClientDirectories",
@@ -451,12 +508,14 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		})
 		bindAutomaticSectionHeight(contextSection)
 
+		applySettingsSearch()
 	end
 
 	const function renderPanelPage(pageName: string)
 		clearContent()
 		titleLabel.Text = "  CodeKit"
 		scopeTabs.Visible = false
+		settingsSearchFrame.Visible = false
 		footerFrame.Visible = false
 		contentFrame.Position = UDim2.fromOffset(0, 83)
 		contentFrame.Size = UDim2.new(1, 0, 1, -83)
@@ -527,9 +586,6 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 					Image = BACK_ICON,
 					ImageColor3 = Theme.TEXT,
 					Visible = false,
-					vide.action(function(instance)
-						backButton = instance :: ImageButton
-					end),
 				}),
 				new("TextLabel")({
 					Name = "Title",
@@ -625,9 +681,11 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 				}),
 				vide.action(function(tabs)
 					const globalTab = TabButton(tabs, "GLOBAL", function()
+						destroyImportLayoutEditor()
 						activeScope("global")
 					end)
 					const workspaceTab = TabButton(tabs, "WORKSPACE", function()
+						destroyImportLayoutEditor()
 						store.refreshWorkspace()
 						activeScope("workspace")
 					end)
@@ -653,6 +711,43 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 				end),
 			}),
 			new("Frame")({
+				Name = "SettingsSearch",
+				Size = UDim2.new(1, -8, 0, 34),
+				Position = UDim2.fromOffset(4, 121),
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
+				Visible = false,
+				vide.action(function(instance)
+					settingsSearchFrame = instance :: Frame
+				end),
+				new("TextBox")({
+					Name = "Search",
+					Size = UDim2.fromScale(1, 1),
+					BackgroundColor3 = Color3.fromRGB(21, 22, 27),
+					BorderSizePixel = 0,
+					ClearTextOnFocus = false,
+					PlaceholderText = "Search settings...",
+					PlaceholderColor3 = Theme.MUTED,
+					Text = "",
+					TextColor3 = Theme.TEXT,
+					TextXAlignment = Enum.TextXAlignment.Left,
+					Font = Enum.Font.SourceSans,
+					TextSize = 15,
+					vide.action(function(instance)
+						settingsSearchBox = instance :: TextBox
+						cleanup(settingsSearchBox:GetPropertyChangedSignal("Text"):Connect(function()
+							settingsSearchQuery(settingsSearchBox.Text)
+						end))
+					end),
+
+					Theme.stroke(Theme.BORDER),
+					new("UIPadding")({
+						PaddingLeft = UDim.new(0, 8),
+						PaddingRight = UDim.new(0, 8),
+					}),
+				}),
+			}),
+			new("Frame")({
 				Name = "Footer",
 				Size = UDim2.new(1, 0, 0, 44),
 				Position = UDim2.new(0, 0, 1, -44),
@@ -675,11 +770,11 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 					Padding = UDim.new(0, 10),
 				}),
 				vide.action(function(footer)
-					FooterButton(footer, "Reset", false, function()
+					FooterButton(footer, "RESET", "danger", function()
 						closeDropdowns()
 						resetSettingsVisible(true)
 					end)
-					FooterButton(footer, "Done", true, function()
+					FooterButton(footer, "Done", "accent", function()
 						widget.Enabled = false
 					end)
 				end),
@@ -773,6 +868,8 @@ const function createWindow(plugin: Plugin, store: Store, resources: WindowResou
 		task.defer(function()
 			showPage(activePage)
 		end)
+
+		effect(applySettingsSearch)
 
 		effect(function()
 			renderTick()

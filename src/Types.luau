@@ -81,7 +81,6 @@ export type AutocompleteCallback = (
 ) -> AutocompleteResponse
 
 export type RequireMode = "local" | "global"
-export type CallStyle = "parentheses" | "bare"
 export type Keyword = "local" | "const"
 export type StringQuote = "double" | "single"
 export type ImportSort = "longestFirst"
@@ -125,7 +124,6 @@ export type Settings = {
 	enabled: boolean,
 	autoModules: boolean,
 	requireMode: RequireMode,
-	callStyle: CallStyle,
 	stringQuote: StringQuote,
 	autocompletePrefix: string,
 	autoServices: boolean,

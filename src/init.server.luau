@@ -73,25 +73,30 @@ const function isSafeIdentifier(text: string)
 end
 
 const function quoteString(text: string, settings: Types.Settings): string
-	if settings.stringQuote == "single" and string.find(text, "'", 1, true) == nil then
+	if
+		settings.stringQuote == "single"
+		and string.find(text, "'", 1, true) == nil
+		and string.find(text, "\\", 1, true) == nil
+		and string.find(text, "[%c]", 1) == nil
+	then
 		return `'{text}'`
 	end
 	return string.format("%q", text)
 end
 
-const function formatRequireCall(argument: string, settings: Types.Settings): string
+const function formatRequireCall(argument: string): string
 	const trimmedArgument = string.gsub(argument, "^%s*(.-)%s*$", "%1")
-	if settings.callStyle == "bare" then
-		return `require {trimmedArgument}`
-	end
-	return `require({trimmedArgument})`
+	return string.format("require(%s)", trimmedArgument)
 end
 
-const function normalizeRequireCallSpacing(line: string): string
-	return string.gsub(line, "require%s*(%b())", function(call: string)
-		const argument = string.gsub(string.sub(call, 2, -2), "^%s*(.-)%s*$", "%1")
-		return `require({argument})`
-	end)
+const function normalizeGeneratedCallSpacing(line: string): string
+	for _, functionName in { "require", "GetService", "WaitForChild", "FindFirstChild" } do
+		line = string.gsub(line, `{functionName}%s*(%b())`, function(call: string)
+			const argument = string.gsub(string.sub(call, 2, -2), "^%s*(.-)%s*$", "%1")
+			return `{functionName}({argument})`
+		end)
+	end
+	return line
 end
 
 const function getSectionKeyword(sectionSettings: Types.SectionSettings): Types.Keyword
@@ -181,9 +186,36 @@ const function getPathSegments(root: Instance, target: Instance): { string }
 	return path
 end
 
+const function getInstancePath(instance: Instance): { Instance }
+	const path = {}
+	local current: Instance? = instance
+	while current ~= nil do
+		table.insert(path, 1, current)
+		current = current.Parent
+	end
+	return path
+end
+
+const function getInstancePathNames(instance: Instance): { string }
+	const names = {}
+	for _, item in getInstancePath(instance) do
+		if item ~= game then
+			table.insert(names, item.Name)
+		end
+	end
+	return names
+end
+
+const function getPathSegmentExpression(name: string): string
+	if isSafeIdentifier(name) then
+		return `.{name}`
+	end
+	return string.format("[%q]", name)
+end
+
 const function getLocalPathExpression(origin: LuaSourceContainer, target: ModuleScript): string
-	const originPath = string.split(origin:GetFullName(), ".")
-	const targetPath = string.split(target:GetFullName(), ".")
+	const originPath = getInstancePath(origin)
+	const targetPath = getInstancePath(target)
 
 	local commonLen = 0
 	const minLen = math.min(#originPath, #targetPath)
@@ -200,12 +232,7 @@ const function getLocalPathExpression(origin: LuaSourceContainer, target: Module
 		expression ..= ".Parent"
 	end
 	for i = commonLen + 1, #targetPath do
-		const segment = targetPath[i]
-		if isSafeIdentifier(segment) then
-			expression ..= `.{segment}`
-		else
-			expression ..= string.format("[%q]", segment)
-		end
+		expression ..= getPathSegmentExpression(targetPath[i].Name)
 	end
 
 	return expression
@@ -241,13 +268,6 @@ end
 const function isNoImport(instance: Instance, settings: Types.Settings): boolean
 	const tagValue = instance:GetAttribute(settings.noImportTag)
 	return tagValue == true
-end
-
-const function getPathSegmentExpression(name: string): string
-	if isSafeIdentifier(name) then
-		return `.{name}`
-	end
-	return string.format("[%q]", name)
 end
 
 const function getInstanceIndexExpression(baseExpression: string, instance: Instance, mode: Types.IndexingMode, settings: Types.Settings): string
@@ -504,6 +524,13 @@ const function insertDuckableImports(
 		return lines
 	end
 
+	for _, entry in requires.entries do
+		lines[entry.lineNumber] = normalizeGeneratedCallSpacing(lines[entry.lineNumber])
+	end
+	for _, entry in acquires.entries do
+		lines[entry.lineNumber] = normalizeGeneratedCallSpacing(lines[entry.lineNumber])
+	end
+
 	local firstRequireLine = math.huge
 	local lastRequireLine = 0
 	for _, entry in requires.entries do
@@ -605,10 +632,8 @@ const function insertDuckableImports(
 		const insertionIndex = getSmartImportInsertionIndex(lines, acquires.entries, newAcquire, fallback)
 		const actualInsertionIndex = if insertionIndex > 0 then insertionIndex else lastImportLine + 1
 		queueLayout("[services]", if firstAcquireLine > 0 then firstAcquireLine else actualInsertionIndex)
-		queue(actualInsertionIndex, newAcquire)
-		if firstRequireLine > 0 and lastAcquireLine == 0 and lines[insertionIndex] ~= "" then
-			queue(insertionIndex, "")
-		elseif firstRequireLine > lastAcquireLine and lines[insertionIndex] ~= "" then
+		queue(actualInsertionIndex, normalizeGeneratedCallSpacing(newAcquire))
+		if firstRequireLine > lastAcquireLine and lines[insertionIndex] ~= "" then
 			queue(insertionIndex, "")
 		end
 	end
@@ -622,7 +647,7 @@ const function insertDuckableImports(
 		)
 		queueLayout("[folders]", insertionIndex)
 		for _, folderLine in newFolderLines do
-			queue(insertionIndex, folderLine)
+			queue(insertionIndex, normalizeGeneratedCallSpacing(folderLine))
 		end
 	end
 
@@ -641,13 +666,13 @@ const function insertDuckableImports(
 		if lastRequireLine == 0 and lastAcquireLine > 0 and lines[insertionIndex] ~= "" then
 			queue(insertionIndex, "")
 		end
-		queue(insertionIndex, newRequire)
+		queue(insertionIndex, normalizeGeneratedCallSpacing(newRequire))
 	end
 
 	if newRemote ~= nil then
 		const insertionIndex = getSmartImportInsertionIndex(lines, requires.entries, newRemote, lastImportLine + 1)
 		queueLayout("[remotes]", insertionIndex)
-		queue(insertionIndex, newRemote)
+		queue(insertionIndex, normalizeGeneratedCallSpacing(newRemote))
 	end
 
 	const duckedLines = {}
@@ -684,6 +709,8 @@ type RefactorUsage = {
 	requireArgument: string,
 	requireFullName: string?,
 	identifier: string,
+	argumentStart: number,
+	argumentEnd: number,
 }
 
 type RefactorEdit = RefactorUsage & {
@@ -723,12 +750,8 @@ const function setSource(scriptInstance: LuaSourceContainer, sourceText: string)
 	return true
 end
 
-const function splitFullName(path: string): { string }
-	return string.split(path, ".")
-end
-
 const function getPathFromRelativeRequire(origin: LuaSourceContainer, requirePath: string): string?
-	local segments = splitFullName(origin:GetFullName())
+	const segments = getInstancePathNames(origin)
 	table.remove(segments, #segments)
 
 	for _, segment in string.split(requirePath, "/") do
@@ -796,7 +819,7 @@ const function getFullNameFromRequireExpression(origin: LuaSourceContainer, argu
 	elseif token == "game" then
 		segments = {}
 	elseif token == "script" then
-		segments = splitFullName(origin:GetFullName())
+		segments = getInstancePathNames(origin)
 	else
 		segments = { token }
 	end
@@ -848,6 +871,93 @@ const function getFullNameFromRequireExpression(origin: LuaSourceContainer, argu
 	return table.concat(segments, ".")
 end
 
+type ProtectedRange = {
+	start: number,
+	finish: number,
+}
+
+const function getLineStartOffsets(source: string): { number }
+	const lineStarts = { 1 }
+	for offset = 1, #source do
+		if string.sub(source, offset, offset) == "\n" then
+			table.insert(lineStarts, offset + 1)
+		end
+	end
+	return lineStarts
+end
+
+const function getPositionOffset(lineStarts: { number }, position: Types.Position): number
+	return (lineStarts[position.line] or 1) + position.character - 1
+end
+
+const function getProtectedRanges(source: string, lineStarts: { number }): { ProtectedRange }
+	const ranges = {}
+	const lexemes = parseScript(source)
+	for _, comment in lexemes.comments do
+		table.insert(ranges, {
+			start = getPositionOffset(lineStarts, comment.range.start),
+			finish = getPositionOffset(lineStarts, comment.range["end"]),
+		})
+	end
+	for _, str in lexemes.strings do
+		table.insert(ranges, {
+			start = getPositionOffset(lineStarts, str.range.start),
+			finish = getPositionOffset(lineStarts, str.range["end"]),
+		})
+	end
+	table.sort(ranges, function(a, b)
+		return a.start < b.start
+	end)
+	return ranges
+end
+
+const function getProtectedRangeAt(ranges: { ProtectedRange }, offset: number): ProtectedRange?
+	for _, range in ranges do
+		if offset < range.start then
+			return nil
+		end
+		if offset <= range.finish then
+			return range
+		end
+	end
+	return nil
+end
+
+const function findMatchingParenthesis(source: string, openOffset: number, ranges: { ProtectedRange }): number?
+	local depth = 1
+	local offset = openOffset + 1
+	while offset <= #source do
+		const protectedRange = getProtectedRangeAt(ranges, offset)
+		if protectedRange ~= nil then
+			offset = protectedRange.finish + 1
+			continue
+		end
+
+		const character = string.sub(source, offset, offset)
+		if character == "(" then
+			depth += 1
+		elseif character == ")" then
+			depth -= 1
+			if depth == 0 then
+				return offset
+			end
+		end
+		offset += 1
+	end
+	return nil
+end
+
+const function getLineNumber(lineStarts: { number }, offset: number): number
+	local lineNumber = 1
+	for index, lineStart in lineStarts do
+		if lineStart > offset then
+			break
+		end
+		lineNumber = index
+	end
+	return lineNumber
+end
+
 const function findRequireUsages(targetPath: string, ignoredScript: LuaSourceContainer?): { RefactorUsage }
 	const usages = {}
 	for _, instance in game:GetDescendants() do
@@ -857,36 +967,91 @@ const function findRequireUsages(targetPath: string, ignoredScript: LuaSourceCon
 
 		const scriptInstance = instance :: LuaSourceContainer
 		const sourceText = getSource(scriptInstance)
-		for lineNumber, line in string.split(sourceText, "\n") do
-			const _, identifier, call = matchTopLevelDeclaration(line, "require%s*(%b())")
-			if identifier == nil or call == nil then
+		const lineStarts = getLineStartOffsets(sourceText)
+		const protectedRanges = getProtectedRanges(sourceText, lineStarts)
+		local searchOffset = 1
+		while true do
+			local requireStart, requireEnd = string.find(sourceText, "%f[%w_]require%f[^%w_]", searchOffset)
+			if requireStart == nil or requireEnd == nil then
+				break
+			end
+			const protectedRange = getProtectedRangeAt(protectedRanges, requireStart)
+			if protectedRange ~= nil then
+				searchOffset = protectedRange.finish + 1
 				continue
 			end
 
-			const argument = string.match(call, "^%((.*)%)$")
-			if argument == nil then
+			local openOffset = requireEnd + 1
+			while openOffset <= #sourceText and string.match(string.sub(sourceText, openOffset, openOffset), "%s") ~= nil do
+				openOffset += 1
+			end
+			local argumentStart = openOffset
+			local argumentEnd: number?
+			if string.sub(sourceText, openOffset, openOffset) == "(" then
+				const closeOffset = findMatchingParenthesis(sourceText, openOffset, protectedRanges)
+				if closeOffset == nil then
+					break
+				end
+				argumentStart = openOffset + 1
+				argumentEnd = closeOffset - 1
+			else
+				const lineNumber = getLineNumber(lineStarts, requireStart)
+				const nextLineStart = lineStarts[lineNumber + 1] or (#sourceText + 1)
+				argumentEnd = nextLineStart - 1
+				local offset = openOffset
+				while offset <= argumentEnd do
+					const rangeAtOffset = getProtectedRangeAt(protectedRanges, offset)
+					if rangeAtOffset ~= nil then
+						if string.sub(sourceText, offset, offset) == "-" then
+							argumentEnd = rangeAtOffset.start - 1
+							break
+						end
+						offset = rangeAtOffset.finish + 1
+						continue
+					end
+					if string.sub(sourceText, offset, offset) == ";" then
+						argumentEnd = offset - 1
+						break
+					end
+					offset += 1
+				end
+				while argumentEnd >= argumentStart and string.match(string.sub(sourceText, argumentEnd, argumentEnd), "%s") ~= nil do
+					argumentEnd -= 1
+				end
+			end
+			if argumentEnd == nil or argumentEnd < argumentStart then
+				searchOffset = requireEnd + 1
 				continue
 			end
 
+			const argument = string.sub(sourceText, argumentStart, argumentEnd)
 			const fullName = getFullNameFromRequireExpression(scriptInstance, argument, sourceText)
 			local directPath = string.gsub(argument, "%s+", "")
 			if string.sub(directPath, 1, 5) == "game." then
 				directPath = string.sub(directPath, 6)
 			end
-			if fullName ~= targetPath and directPath ~= targetPath then
-				continue
+			if fullName == targetPath or directPath == targetPath then
+				const lineNumber = getLineNumber(lineStarts, requireStart)
+				const lineStart = lineStarts[lineNumber]
+				const nextLineStart = lineStarts[lineNumber + 1] or (#sourceText + 1)
+				const line = string.sub(sourceText, lineStart, nextLineStart - 2)
+				const prefix = string.sub(sourceText, lineStart, requireStart - 1)
+				const _, identifier = string.match(prefix, "^%s*(local|const)%s+(" .. PAT_IDENT .. ")%s*=%s*$")
+				table.insert(usages, {
+					script = scriptInstance,
+					line = lineNumber,
+					path = scriptInstance:GetFullName(),
+					text = line,
+					source = sourceText,
+					requireArgument = argument,
+					requireFullName = fullName,
+					identifier = identifier or "",
+					argumentStart = argumentStart,
+					argumentEnd = argumentEnd,
+				})
 			end
 
-			table.insert(usages, {
-				script = scriptInstance,
-				line = lineNumber,
-				path = scriptInstance:GetFullName(),
-				text = line,
-				source = sourceText,
-				requireArgument = argument,
-				requireFullName = fullName,
-				identifier = identifier,
-			})
+			searchOffset = requireEnd + 1
 		end
 	end
 
@@ -937,10 +1102,6 @@ const function isInString(pos: Types.Position, str: Types.String): boolean
 		return pos.line == p0.line and pos.character >= p0.character and pos.character <= p1.character
 	end
 	return isInLongRange(pos, range)
-end
-
-const function isNonBlankLine(text: string?)
-	return text == nil or string.match(text, "%S") ~= nil
 end
 
 const function getImportIdentifier(line: string): string
@@ -1030,18 +1191,29 @@ const function getFolderDepthLimit(settings: Types.Settings): number
 	return 1
 end
 
-const function getFolderImports(root: Instance, target: Instance, rootIdentifier: string, settings: Types.Settings)
+const function getFolderImports(
+	root: Instance,
+	target: Instance,
+	rootIdentifier: string,
+	settings: Types.Settings,
+	makeIdentifier: ((string) -> string)?
+)
 	const parent = target.Parent
 	if parent == nil or parent == root then
 		return {}, rootIdentifier
 	end
 
 	if not settings.autoFolders then
-		local directExpression = rootIdentifier
+		const directAncestors = {}
 		local directCurrent: Instance = parent
 		while directCurrent ~= root do
-			directExpression ..= getPathSegmentExpression(directCurrent.Name)
+			table.insert(directAncestors, 1, directCurrent)
 			directCurrent = directCurrent.Parent :: Instance
+		end
+
+		local directExpression = rootIdentifier
+		for _, ancestor in directAncestors do
+			directExpression ..= getPathSegmentExpression(ancestor.Name)
 		end
 		return {}, directExpression
 	end
@@ -1060,7 +1232,8 @@ const function getFolderImports(root: Instance, target: Instance, rootIdentifier
 	for _, ancestor in ancestors do
 		expression ..= getPathSegmentExpression(ancestor.Name)
 		if ancestor:IsA("Folder") and importedFolderCount < depthLimit then
-			const identifier = getImportIdentifierFromInstance(ancestor, settings)
+			const baseIdentifier = getImportIdentifierFromInstance(ancestor, settings)
+			const identifier = if makeIdentifier ~= nil then makeIdentifier(baseIdentifier) else baseIdentifier
 			table.insert(folderLines, finishStatement(`{getSectionKeyword(settings.instances)} {identifier} = {expression}`, settings))
 			expression = identifier
 			importedFolderCount += 1
@@ -1072,8 +1245,12 @@ end
 
 const function expandSnippet(source: string, origin: LuaSourceContainer, trigger: string): string
 	local expanded = source
-	expanded = string.gsub(expanded, "%${scriptName}", origin.Name)
-	expanded = string.gsub(expanded, "%${trigger}", trigger)
+	expanded = string.gsub(expanded, "%${scriptName}", function()
+		return origin.Name
+	end)
+	expanded = string.gsub(expanded, "%${trigger}", function()
+		return trigger
+	end)
 	expanded = string.gsub(expanded, "%${%d+:([^}]-)}", "%1")
 	return expanded
 end
@@ -1083,17 +1260,6 @@ const function getReplaceRange(position: Types.Position, triggerStartCharacter: 
 		start = { line = position.line, character = triggerStartCharacter },
 		["end"] = { line = position.line, character = position.character },
 	}
-end
-
-const function getFirstEntryLine(entries): number?
-	local lineNumber: number? = nil
-	for _, entry in entries do
-		if lineNumber == nil or entry.lineNumber < lineNumber then
-			lineNumber = entry.lineNumber
-		end
-	end
-
-	return lineNumber
 end
 
 const function getManagedImportLines(settings: Types.Settings)
@@ -1170,10 +1336,10 @@ const function organizeImports(
 		const key = `{entry.serviceName}:{entry.identifier}`
 		const existingIndex = seenServices[key]
 		if existingIndex == nil then
-			table.insert(serviceLines, lines[entry.lineNumber])
+			table.insert(serviceLines, normalizeGeneratedCallSpacing(lines[entry.lineNumber]))
 			seenServices[key] = #serviceLines
 		elseif entry.declaration == "const" then
-			serviceLines[existingIndex] = lines[entry.lineNumber]
+			serviceLines[existingIndex] = normalizeGeneratedCallSpacing(lines[entry.lineNumber])
 		end
 	end
 
@@ -1183,26 +1349,26 @@ const function organizeImports(
 
 		const existingIndex = seenRequires[entry.identifier]
 		if existingIndex == nil then
-			table.insert(requireLines, normalizeRequireCallSpacing(lines[entry.lineNumber]))
+			table.insert(requireLines, normalizeGeneratedCallSpacing(lines[entry.lineNumber]))
 			seenRequires[entry.identifier] = #requireLines
 		elseif entry.declaration == "const" then
-			requireLines[existingIndex] = normalizeRequireCallSpacing(lines[entry.lineNumber])
+			requireLines[existingIndex] = normalizeGeneratedCallSpacing(lines[entry.lineNumber])
 		end
 	end
 
 	if newAcquire ~= nil then
-		table.insert(serviceLines, newAcquire)
+		table.insert(serviceLines, normalizeGeneratedCallSpacing(newAcquire))
 	end
 	if newRequire ~= nil then
-		table.insert(requireLines, newRequire)
+		table.insert(requireLines, normalizeGeneratedCallSpacing(newRequire))
 	end
 	if newFolderLines ~= nil then
 		for _, folderLine in newFolderLines do
-			table.insert(folderLines, folderLine)
+			table.insert(folderLines, normalizeGeneratedCallSpacing(folderLine))
 		end
 	end
 	if newRemote ~= nil then
-		table.insert(remoteLines, newRemote)
+		table.insert(remoteLines, normalizeGeneratedCallSpacing(newRemote))
 	end
 
 	table.sort(serviceLines, function(a, b)
@@ -1318,6 +1484,27 @@ local settingsWindow = nil
 local bootstrapQueued = false
 local unloading = false
 local lastAutocompleteError = ""
+const autocompleteInstances: { Instance } = {}
+const indexedAutocompleteInstances: { [Instance]: boolean } = {}
+
+const function trackAutocompleteInstance(instance: Instance)
+	if indexedAutocompleteInstances[instance] == true then
+		return
+	end
+	indexedAutocompleteInstances[instance] = true
+	table.insert(autocompleteInstances, instance)
+end
+
+const function untrackAutocompleteInstance(instance: Instance)
+	if indexedAutocompleteInstances[instance] ~= true then
+		return
+	end
+	indexedAutocompleteInstances[instance] = nil
+	const index = table.find(autocompleteInstances, instance)
+	if index ~= nil then
+		table.remove(autocompleteInstances, index)
+	end
+end
 
 const refactorQueue = {
 	changed = refactorChanged.Event,
@@ -1335,6 +1522,9 @@ const refactorQueue = {
 }
 
 const function openRefactorWindow()
+	if RunService:IsRunning() then
+		return
+	end
 	if settingsWindow == nil then
 		settingsWindow = SettingsWindow.create(plugin, settingsStore, {
 			snippetsStore = snippetsStore,
@@ -1355,8 +1545,8 @@ settingsButton.Click:Connect(function()
 end)
 
 const function getRelativePath(origin: Instance, target: Instance): string?
-	const originPath = string.split(origin:GetFullName(), ".")
-	const targetPath = string.split(target:GetFullName(), ".")
+	const originPath = getInstancePath(origin)
+	const targetPath = getInstancePath(target)
 
 	-- Find common prefix
 	local commonLen = 0
@@ -1405,7 +1595,7 @@ const function getRelativePath(origin: Instance, target: Instance): string?
 
 	-- Down steps from LCA (exclusive) to target
 	for i = commonLen + 1, #targetPath do
-		table.insert(parts, targetPath[i])
+		table.insert(parts, targetPath[i].Name)
 	end
 
 	return table.concat(parts, "/")
@@ -1426,25 +1616,42 @@ const function getIdentifierFromName(name: string, settings: Types.Settings): st
 	return name
 end
 
-const function replaceFirst(source: string, needle: string, replacement: string): string
-	const startIndex, endIndex = string.find(source, needle, 1, true)
-	if startIndex == nil or endIndex == nil then
-		return source
-	end
-	return string.sub(source, 1, startIndex - 1) .. replacement .. string.sub(source, endIndex + 1)
-end
-
 const function replaceIdentifier(source: string, oldIdentifier: string, newIdentifier: string): string
 	if oldIdentifier == newIdentifier then
 		return source
 	end
-	return string.gsub(source, `%f[%w_]{escapePattern(oldIdentifier)}%f[^%w_]`, newIdentifier)
+
+	const lineStarts = getLineStartOffsets(source)
+	const protectedRanges = getProtectedRanges(source, lineStarts)
+	const pattern = `%f[%w_]{escapePattern(oldIdentifier)}%f[^%w_]`
+	local searchOffset = 1
+	local copyOffset = 1
+	local replaced = false
+	local parts = {}
+	while true do
+		local startIndex, endIndex = string.find(source, pattern, searchOffset)
+		if startIndex == nil or endIndex == nil then
+			break
+		end
+		const protectedRange = getProtectedRangeAt(protectedRanges, startIndex)
+		if protectedRange == nil then
+			table.insert(parts, string.sub(source, copyOffset, startIndex - 1))
+			table.insert(parts, newIdentifier)
+			copyOffset = endIndex + 1
+			replaced = true
+		end
+		searchOffset = endIndex + 1
+	end
+
+	if not replaced then
+		return source
+	end
+	table.insert(parts, string.sub(source, copyOffset))
+	return table.concat(parts)
 end
 
-const function replaceLine(source: string, lineNumber: number, replacement: string): string
-	const lines = string.split(source, "\n")
-	lines[lineNumber] = replacement
-	return table.concat(lines, "\n")
+const function replaceSourceRange(source: string, startIndex: number, endIndex: number, replacement: string): string
+	return string.sub(source, 1, startIndex - 1) .. replacement .. string.sub(source, endIndex + 1)
 end
 
 const function getServiceIdentifierFromArgument(argument: string, source: string, serviceName: string): string
@@ -1486,58 +1693,105 @@ const function getRequireArgumentForUsage(usage: RefactorUsage, module: ModuleSc
 	return expression
 end
 
-const function getUpdatedRequireLine(usage: RefactorUsage, newIdentifier: string, newArgument: string): string
-	local line = replaceFirst(usage.text, usage.requireArgument, newArgument)
-	line = string.gsub(line, `^(%s*[%a]+%s+){escapePattern(usage.identifier)}(%s*=)`, `%1{newIdentifier}%2`, 1)
-	return normalizeRequireCallSpacing(line)
-end
-
 const function buildRefactorEdits(module: ModuleScript, snapshot: ModuleSnapshot): { RefactorEdit }
 	const settings = settingsStore.get()
 	const oldIdentifier = getIdentifierFromName(snapshot.name, settings)
 	const newIdentifier = getModuleIdentifier(module, settings)
 	const edits = {}
-	const workingSources: { [LuaSourceContainer]: string } = {}
-
+	const usagesByScript: { [LuaSourceContainer]: { RefactorUsage } } = {}
 	for _, usage in findRequireUsages(snapshot.path, module) do
-		const newArgument = getRequireArgumentForUsage(usage, module, settings)
-		const newLine = getUpdatedRequireLine(usage, newIdentifier, newArgument)
-		const source = workingSources[usage.script] or usage.source
-		local newSource = replaceLine(source, usage.line, newLine)
-		if usage.identifier == oldIdentifier then
+		if usagesByScript[usage.script] == nil then
+			usagesByScript[usage.script] = {}
+		end
+		table.insert(usagesByScript[usage.script], usage)
+	end
+
+	for script, scriptUsages in usagesByScript do
+		table.sort(scriptUsages, function(a, b)
+			return a.argumentStart > b.argumentStart
+		end)
+
+		local newSource = scriptUsages[1].source
+		local shouldRename = false
+		for _, usage in scriptUsages do
+			const newArgument = getRequireArgumentForUsage(usage, module, settings)
+			newSource = replaceSourceRange(newSource, usage.argumentStart, usage.argumentEnd, newArgument)
+			shouldRename = shouldRename or usage.identifier == oldIdentifier
+		end
+		if shouldRename then
 			newSource = replaceIdentifier(newSource, oldIdentifier, newIdentifier)
 		end
-		workingSources[usage.script] = newSource
 
-		table.insert(edits, {
-			script = usage.script,
-			line = usage.line,
-			path = usage.path,
-			text = usage.text,
-			source = usage.source,
-			requireArgument = usage.requireArgument,
-			requireFullName = usage.requireFullName,
-			identifier = usage.identifier,
-			newSource = newSource,
-			newIdentifier = newIdentifier,
-			newRequireArgument = newArgument,
-		})
+		for _, usage in scriptUsages do
+			table.insert(edits, {
+				script = script,
+				line = usage.line,
+				path = usage.path,
+				text = usage.text,
+				source = usage.source,
+				requireArgument = usage.requireArgument,
+				requireFullName = usage.requireFullName,
+				identifier = usage.identifier,
+				argumentStart = usage.argumentStart,
+				argumentEnd = usage.argumentEnd,
+				newSource = newSource,
+				newIdentifier = newIdentifier,
+				newRequireArgument = getRequireArgumentForUsage(usage, module, settings),
+			})
+		end
 	end
 
 	return edits
 end
 
-const function applyRefactorEdits(edits: { RefactorEdit })
-	const sources: { [LuaSourceContainer]: string } = {}
+const function applyRefactorEdits(edits: { RefactorEdit }): boolean
+	type RefactorSource = {
+		expected: string,
+		updated: string,
+	}
+	const sources: { [LuaSourceContainer]: RefactorSource } = {}
 	for _, edit in edits do
-		sources[edit.script] = edit.newSource
+		if sources[edit.script] == nil then
+			sources[edit.script] = {
+				expected = edit.source,
+				updated = edit.newSource,
+			}
+		end
 	end
+	const currentSources: { [LuaSourceContainer]: string } = {}
 	for script, source in sources do
-		setSource(script, source)
+		if script.Parent == nil then
+			warn(`CodeKit refactor skipped because {script:GetFullName()} was removed.`)
+			return false
+		end
+		const currentSource = getSource(script)
+		if currentSource ~= source.expected and currentSource ~= source.updated then
+			warn(`CodeKit refactor skipped because {script:GetFullName()} changed while the preview was open.`)
+			return false
+		end
+		currentSources[script] = currentSource
 	end
+
+	const appliedScripts: { [LuaSourceContainer]: boolean } = {}
+	for script, source in sources do
+		if currentSources[script] == source.updated then
+			continue
+		end
+		if not setSource(script, source.updated) then
+			for appliedScript in appliedScripts do
+				setSource(appliedScript, currentSources[appliedScript])
+			end
+			return false
+		end
+		appliedScripts[script] = true
+	end
+	return true
 end
 
 const function enqueueRefactor(item)
+	if RunService:IsRunning() then
+		return
+	end
 	table.insert(pendingRefactors, item)
 	refactorChanged:Fire()
 	openRefactorWindow()
@@ -1555,11 +1809,14 @@ const function updateModuleSnapshot(module: ModuleScript)
 end
 
 const function handleModuleChanged(module: ModuleScript)
+	if RunService:IsRunning() then
+		return
+	end
 	const snapshot = moduleSnapshots[module]
 	if snapshot == nil or module.Parent == nil then
 		return
 	end
-	if snapshot.name == module.Name and snapshot.parent == module.Parent then
+	if snapshot.name == module.Name and snapshot.parent == module.Parent and snapshot.path == module:GetFullName() then
 		updateModuleSnapshot(module)
 		return
 	end
@@ -1579,13 +1836,16 @@ const function handleModuleChanged(module: ModuleScript)
 		usages = edits,
 		acceptText = "Yes",
 		accept = function()
-			applyRefactorEdits(edits)
+			return applyRefactorEdits(edits)
 		end,
 		dismiss = function() end,
 	})
 end
 
 const function handleModuleDeleted(module: ModuleScript, snapshot: ModuleSnapshot)
+	if RunService:IsRunning() then
+		return
+	end
 	const usages = findRequireUsages(snapshot.path, module)
 	if #usages == 0 then
 		return
@@ -1612,6 +1872,9 @@ const function untrackModule(module: ModuleScript)
 end
 
 const function trackModule(module: ModuleScript)
+	if RunService:IsRunning() then
+		return
+	end
 	if moduleConnections[module] ~= nil then
 		updateModuleSnapshot(module)
 		return
@@ -1620,15 +1883,21 @@ const function trackModule(module: ModuleScript)
 	updateModuleSnapshot(module)
 	moduleConnections[module] = {
 		module:GetPropertyChangedSignal("Name"):Connect(function()
+			if unloading or RunService:IsRunning() then
+				return
+			end
 			task.defer(function()
-				if module.Parent ~= nil then
+				if not unloading and not RunService:IsRunning() and module.Parent ~= nil then
 					handleModuleChanged(module)
 				end
 			end)
 		end),
 		module:GetPropertyChangedSignal("Parent"):Connect(function()
+			if unloading or RunService:IsRunning() then
+				return
+			end
 			task.defer(function()
-				if module.Parent == nil then
+				if unloading or RunService:IsRunning() or module.Parent == nil then
 					return
 				end
 				handleModuleChanged(module)
@@ -1718,6 +1987,32 @@ const autocomplete: Types.AutocompleteCallback = function(request, response)
 
 	const requires = getRequires(patchSource)
 	const acquires = getServiceAcquisitions(patchSource)
+	const usedIdentifiers: { [string]: boolean } = {}
+	for identifier in requires.byIdentifier do
+		usedIdentifiers[identifier] = true
+	end
+	for _, entry in acquires.entries do
+		usedIdentifiers[entry.identifier] = true
+	end
+
+	const function createIdentifierAllocator(): ((string) -> string)
+		const itemUsedIdentifiers = table.clone(usedIdentifiers)
+		return function(baseIdentifier: string): string
+			local identifier = baseIdentifier
+			if itemUsedIdentifiers[identifier] ~= true then
+				itemUsedIdentifiers[identifier] = true
+				return identifier
+			end
+
+			local suffix = 2
+			repeat
+				identifier = `{baseIdentifier}{suffix}`
+				suffix += 1
+			until itemUsedIdentifiers[identifier] ~= true
+			itemUsedIdentifiers[identifier] = true
+			return identifier
+		end
+	end
 
 	const items = table.clone(response.items)
 
@@ -1735,18 +2030,18 @@ const autocomplete: Types.AutocompleteCallback = function(request, response)
 			const indentation = string.match(line, "^%s*") or ""
 			const importLines = {}
 			if acquireSource ~= nil then
-				table.insert(importLines, `{indentation}{acquireSource}`)
+				table.insert(importLines, normalizeGeneratedCallSpacing(`{indentation}{acquireSource}`))
 			end
 			if effectiveFolderSources ~= nil then
 				for _, folderLine in effectiveFolderSources do
-					table.insert(importLines, `{indentation}{folderLine}`)
+					table.insert(importLines, normalizeGeneratedCallSpacing(`{indentation}{folderLine}`))
 				end
 			end
 			if requireSource ~= nil then
-				table.insert(importLines, `{indentation}{requireSource}`)
+				table.insert(importLines, normalizeGeneratedCallSpacing(`{indentation}{requireSource}`))
 			end
 			if remoteSource ~= nil then
-				table.insert(importLines, `{indentation}{remoteSource}`)
+				table.insert(importLines, normalizeGeneratedCallSpacing(`{indentation}{remoteSource}`))
 			end
 
 			const insertionIndex = position.line
@@ -1780,12 +2075,14 @@ const autocomplete: Types.AutocompleteCallback = function(request, response)
 			if isNoImport(module, settings) then
 				continue
 			end
-			const identifier = getModuleIdentifier(module, settings)
-			if requires.byIdentifier[identifier] ~= nil then
+			const getUniqueIdentifier = createIdentifierAllocator()
+			const baseIdentifier = getModuleIdentifier(module, settings)
+			if requires.byIdentifier[baseIdentifier] ~= nil then
 				continue
 			end
+			const identifier = getUniqueIdentifier(baseIdentifier)
 
-			const service, path = getModuleProvenance(module)
+			const service = getModuleProvenance(module)
 
 			local serviceIdentifier = service.Name
 			local acquireSource: string? = nil
@@ -1804,17 +2101,18 @@ const autocomplete: Types.AutocompleteCallback = function(request, response)
 				if acquires.byServiceName[serviceIdentifier] ~= nil then
 					serviceIdentifier = acquires.byServiceName[serviceIdentifier].identifier
 				else
+					serviceIdentifier = getUniqueIdentifier(serviceIdentifier)
 					acquireSource = finishStatement(
-						`{getSectionKeyword(settings.services)} {serviceIdentifier} = game:GetService({quoteString(serviceIdentifier, settings)})`,
+						`{getSectionKeyword(settings.services)} {serviceIdentifier} = game:GetService({quoteString(service.Name, settings)})`,
 						settings
 					)
 				end
 				local baseExpression = serviceIdentifier
-				folderSources, baseExpression = getFolderImports(service, module, serviceIdentifier, settings)
+				folderSources, baseExpression = getFolderImports(service, module, serviceIdentifier, settings, getUniqueIdentifier)
 				requirePath = `{baseExpression}{getPathSegmentExpression(module.Name)}`
 			end
 
-			const requireCall = formatRequireCall(requirePath, settings)
+			const requireCall = formatRequireCall(requirePath)
 			const requireSource = finishStatement(`{getSectionKeyword(settings.modules)} {identifier} = {requireCall}`, settings)
 
 			table.insert(items, {
@@ -1836,11 +2134,13 @@ const autocomplete: Types.AutocompleteCallback = function(request, response)
 		const serviceAliases = getAliasMap(settings.customServiceAliases)
 		for _, service in services do
 			const serviceName = service.name
-			const identifier = serviceAliases[serviceName] or applyCasing(serviceName, settings.services.casing)
+			const baseIdentifier = serviceAliases[serviceName] or applyCasing(serviceName, settings.services.casing)
 			seenServices[serviceName] = true
 			if acquires.byServiceName[serviceName] ~= nil then
 				continue
 			end
+			const getUniqueIdentifier = createIdentifierAllocator()
+			const identifier = getUniqueIdentifier(baseIdentifier)
 
 			const acquireSource = finishStatement(
 				`{getSectionKeyword(settings.services)} {identifier} = game:GetService({quoteString(serviceName, settings)})`,
@@ -1866,7 +2166,9 @@ const autocomplete: Types.AutocompleteCallback = function(request, response)
 				continue
 			end
 			seenServices[identifier] = true
-			const localIdentifier = serviceAliases[identifier] or applyCasing(identifier, settings.services.casing)
+			const baseIdentifier = serviceAliases[identifier] or applyCasing(identifier, settings.services.casing)
+			const getUniqueIdentifier = createIdentifierAllocator()
+			const localIdentifier = getUniqueIdentifier(baseIdentifier)
 
 			const acquireSource = finishStatement(
 				`{getSectionKeyword(settings.services)} {localIdentifier} = game:GetService({quoteString(identifier, settings)})`,
@@ -1889,7 +2191,7 @@ const autocomplete: Types.AutocompleteCallback = function(request, response)
 
 	if settings.autoInstances and (settings.autoRemotes or settings.autoFolders) then
 		const normalizedTrigger = string.lower(trigger)
-		for _, instance in game:GetDescendants() do
+		for _, instance in autocompleteInstances do
 			if isNoImport(instance, settings) then
 				continue
 			end
@@ -1911,19 +2213,21 @@ const autocomplete: Types.AutocompleteCallback = function(request, response)
 			const editRange = getReplaceRange(position, triggerStartCharacter)
 			const root = getDataModelRoot(instance)
 			if root ~= nil then
+				const getUniqueIdentifier = createIdentifierAllocator()
 				local rootIdentifier = root.Name
 				if acquires.byServiceName[rootIdentifier] ~= nil then
 					rootIdentifier = acquires.byServiceName[rootIdentifier].identifier
 				else
+					rootIdentifier = getUniqueIdentifier(rootIdentifier)
 					acquireSource = finishStatement(
-						`{getSectionKeyword(settings.services)} {rootIdentifier} = game:GetService({quoteString(rootIdentifier, settings)})`,
+						`{getSectionKeyword(settings.services)} {rootIdentifier} = game:GetService({quoteString(root.Name, settings)})`,
 						settings
 					)
 				end
 
 				local baseExpression = rootIdentifier
-				folderSources, baseExpression = getFolderImports(root, instance, rootIdentifier, settings)
-				const identifier = getImportIdentifierFromInstance(instance, settings)
+				folderSources, baseExpression = getFolderImports(root, instance, rootIdentifier, settings, getUniqueIdentifier)
+				const identifier = getUniqueIdentifier(getImportIdentifierFromInstance(instance, settings))
 				completionText = identifier
 				const indexedExpression = getInstanceIndexExpression(baseExpression, instance, getScriptIndexingMode(originScript, settings), settings)
 				if instance:IsA("Folder") then
@@ -1964,9 +2268,15 @@ const autocomplete: Types.AutocompleteCallback = function(request, response)
 			if string.find(string.lower(identifier), normalizedTrigger, 1, true) ~= 1 then
 				continue
 			end
+			if usedIdentifiers[identifier] == true then
+				continue
+			end
 
 			local acquireSource: string? = nil
 			if definition.service ~= nil and acquires.byServiceName[definition.service] == nil then
+				if usedIdentifiers[definition.service] == true then
+					continue
+				end
 				acquireSource = finishStatement(
 					`{getSectionKeyword(settings.services)} {definition.service} = game:GetService({quoteString(definition.service, settings)})`,
 					settings
@@ -1977,6 +2287,7 @@ const autocomplete: Types.AutocompleteCallback = function(request, response)
 				`{getSectionKeyword(settings.definitions)} {identifier} = {definition.source}`,
 				settings
 			)
+			usedIdentifiers[identifier] = true
 
 			table.insert(items, {
 				label = identifier,
@@ -2063,14 +2374,14 @@ const function deregisterAutocomplete()
 end
 
 const function queueAutocompleteBootstrap()
-	if unloading or bootstrapQueued then
+	if unloading or RunService:IsRunning() or bootstrapQueued then
 		return
 	end
 
 	bootstrapQueued = true
 	task.delay(BOOTSTRAP_DELAY, function()
 		bootstrapQueued = false
-		if unloading then
+		if unloading or RunService:IsRunning() then
 			return
 		end
 
@@ -2107,23 +2418,32 @@ table.insert(connections, ScriptEditorService.TextDocumentDidOpen:Connect(queueA
 table.insert(connections, ScriptEditorService.TextDocumentDidClose:Connect(queueAutocompleteBootstrap))
 
 for _, instance in game:GetDescendants() do
+	trackAutocompleteInstance(instance)
 	if instance:IsA("ModuleScript") then
 		trackModule(instance)
 	end
 end
 
 table.insert(connections, game.DescendantAdded:Connect(function(instance)
+	if RunService:IsRunning() then
+		return
+	end
+	trackAutocompleteInstance(instance)
 	if instance:IsA("ModuleScript") then
 		trackModule(instance)
 		queueAutocompleteBootstrap()
 	end
 end))
 table.insert(connections, game.DescendantRemoving:Connect(function(instance)
+	untrackAutocompleteInstance(instance)
+	if RunService:IsRunning() then
+		return
+	end
 	if instance:IsA("ModuleScript") then
 		const module = instance :: ModuleScript
 		const snapshot = moduleSnapshots[module]
 		task.defer(function()
-			if module.Parent == nil and snapshot ~= nil then
+			if not RunService:IsRunning() and module.Parent == nil and snapshot ~= nil then
 				handleModuleDeleted(module, snapshot)
 				untrackModule(module)
 			end

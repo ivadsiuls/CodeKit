@@ -22,6 +22,13 @@ const PREVIEW_TEXT_SIZE = 14
 const PREVIEW_LINE_HEIGHT = 16
 const MAX_Z_INDEX = 2_147_483_647
 const MIN_LOADING_TIME = 0.25
+const MAX_CUSTOM_THEMES = 100
+const MAX_THEME_NAME_LENGTH = 128
+const VALID_THEME_COLORS = {}
+
+for name in Themes[1].colors do
+	VALID_THEME_COLORS[name] = true
+end
 
 const function applyTheme(theme)
 	const studio = settings().Studio
@@ -41,7 +48,13 @@ const function getCurrentTheme(colors)
 	const studio = settings().Studio
 	const currentColors = {}
 	for name in colors do
+		if VALID_THEME_COLORS[name] ~= true then
+			continue
+		end
 		const color = studio[name]
+		if color == nil then
+			continue
+		end
 		currentColors[name] = {
 			math.round(color.R * 255),
 			math.round(color.G * 255),
@@ -63,23 +76,66 @@ const function normalizeThemePayload(decoded)
 	end
 
 	const colors = {}
+	local colorCount = 0
 	for name, color in decoded do
-		if typeof(name) ~= "string" or typeof(color) ~= "table" then
+		if typeof(name) ~= "string" or VALID_THEME_COLORS[name] ~= true or typeof(color) ~= "table" then
 			continue
 		end
-		if typeof(color[1]) == "number" and typeof(color[2]) == "number" and typeof(color[3]) == "number" then
+		if
+			typeof(color[1]) == "number"
+			and typeof(color[2]) == "number"
+			and typeof(color[3]) == "number"
+			and color[1] >= 0
+			and color[1] <= 255
+			and color[2] >= 0
+			and color[2] <= 255
+			and color[3] >= 0
+			and color[3] <= 255
+			and color[1] == math.floor(color[1])
+			and color[2] == math.floor(color[2])
+			and color[3] == math.floor(color[3])
+		then
 			colors[name] = { color[1], color[2], color[3] }
+			colorCount += 1
 		end
 	end
-	return colors
+	return if colorCount > 0 then colors else nil
 end
 
 const function getThemeColor(theme, name: string, fallback: Color3): Color3
 	const color = theme.colors[name]
-	if color == nil then
+	if color == nil or VALID_THEME_COLORS[name] ~= true then
 		return fallback
 	end
 	return Color3.fromRGB(color[1], color[2], color[3])
+end
+
+const function normalizeCustomThemes(value)
+	if typeof(value) ~= "table" then
+		return {}
+	end
+
+	const normalized = {}
+	for _, theme in value do
+		if #normalized >= MAX_CUSTOM_THEMES then
+			break
+		end
+		if typeof(theme) ~= "table" or typeof(theme.name) ~= "string" or theme.name == "" then
+			continue
+		end
+		if #theme.name > MAX_THEME_NAME_LENGTH then
+			continue
+		end
+		const colors = normalizeThemePayload(theme.colors)
+		if colors == nil then
+			continue
+		end
+		table.insert(normalized, {
+			name = theme.name,
+			colors = colors,
+		})
+	end
+	return normalized
 end
 
 const function toHex(color: Color3): string
@@ -284,13 +340,12 @@ const function createPanel(parent: Instance, plugin: Plugin)
 	local importNameBox: TextBox
 	local importJsonBox: TextBox
 	local importJsonScroll: ScrollingFrame
-	local importTitleLabel: TextLabel
 	local exportBox: TextBox
 	local exportScroll: ScrollingFrame
 	local loadingImage: ImageLabel
 
 	const selectedTheme = source(nil)
-	const customThemes = source(Data.load(plugin, CUSTOM_THEMES_KEY, {}))
+	const customThemes = source(normalizeCustomThemes(Data.load(plugin, CUSTOM_THEMES_KEY, {})))
 	const searchQuery = source("")
 	const importVisible = source(false)
 	const editingTheme = source(nil)
@@ -298,12 +353,10 @@ const function createPanel(parent: Instance, plugin: Plugin)
 	const loadingVisible = source(false)
 	const previousTheme = source(nil)
 	local loadingAnimationId = 0
-	local loadingStartedAt = 0
 
-	const function startLoading()
+	const function startLoading(): number
 		loadingAnimationId += 1
 		const animationId = loadingAnimationId
-		loadingStartedAt = os.clock()
 		loadingVisible(true)
 		loadingImage.Size = UDim2.fromOffset(62, 62)
 
@@ -329,30 +382,47 @@ const function createPanel(parent: Instance, plugin: Plugin)
 				shrink.Completed:Wait()
 			end
 		end)
+		return animationId
 	end
 
-	const function stopLoading()
+	const function stopLoading(animationId: number?)
+		if animationId ~= nil and animationId ~= loadingAnimationId then
+			return
+		end
 		loadingAnimationId += 1
 		loadingVisible(false)
 	end
 
 	const function loadTheme(theme)
-		startLoading()
+		const animationId = startLoading()
+		const startedAt = os.clock()
 		task.spawn(function()
 			RunService.Heartbeat:Wait()
+			if animationId ~= loadingAnimationId then
+				return
+			end
 			task.wait(0.1)
-			applyTheme(theme)
-			const remaining = MIN_LOADING_TIME - (os.clock() - loadingStartedAt)
+			if animationId ~= loadingAnimationId then
+				return
+			end
+			local success, message = pcall(function()
+				applyTheme(theme)
+			end)
+			if not success then
+				warn(`Failed to apply theme: {message}`)
+			end
+			const remaining = MIN_LOADING_TIME - (os.clock() - startedAt)
 			if remaining > 0 then
 				task.wait(remaining)
 			end
-			stopLoading()
+			stopLoading(animationId)
 		end)
 	end
 
 	const function saveCustomThemes(nextThemes)
-		Data.save(plugin, CUSTOM_THEMES_KEY, nextThemes)
-		customThemes(nextThemes)
+		const normalized = normalizeCustomThemes(nextThemes)
+		Data.save(plugin, CUSTOM_THEMES_KEY, normalized)
+		customThemes(normalized)
 	end
 
 	const function openThemeEditor(theme)
@@ -371,17 +441,6 @@ const function createPanel(parent: Instance, plugin: Plugin)
 			end
 		end
 		saveCustomThemes(nextThemes)
-	end
-
-	const function getAllThemes()
-		const allThemes = {}
-		for _, theme in Themes do
-			table.insert(allThemes, theme)
-		end
-		for _, theme in customThemes() do
-			table.insert(allThemes, theme)
-		end
-		return allThemes
 	end
 
 	const function renderThemes()
@@ -695,7 +754,6 @@ const function createPanel(parent: Instance, plugin: Plugin)
 					Font = Enum.Font.SourceSansBold,
 					TextSize = 24,
 					vide.action(function(label)
-						importTitleLabel = label :: TextLabel
 						effect(function()
 							label.Text = if editingTheme() == nil then "Add Theme" else "Edit Theme"
 						end)
@@ -969,6 +1027,7 @@ const function createPanel(parent: Instance, plugin: Plugin)
 
 	return {
 		destroy = function()
+			stopLoading()
 			destroyUi()
 		end,
 	}

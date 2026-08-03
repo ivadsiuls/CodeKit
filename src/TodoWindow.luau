@@ -34,7 +34,7 @@ const function trim(text: string): string
 end
 
 const function getTodoText(commentText: string): string?
-	const startIndex = string.find(string.upper(commentText), "TODO", 1, true)
+	const startIndex = string.find(string.upper(commentText), "%f[%w_]TODO%f[^%w_]")
 	if startIndex == nil then
 		return nil
 	end
@@ -43,7 +43,7 @@ const function getTodoText(commentText: string): string?
 end
 
 const function getTodoLine(comment: Types.Comment): number
-	const startIndex = string.find(string.upper(comment.text), "TODO", 1, true)
+	const startIndex = string.find(string.upper(comment.text), "%f[%w_]TODO%f[^%w_]")
 	if startIndex == nil then
 		return comment.range.start.line
 	end
@@ -110,20 +110,48 @@ const function createPanel(parent: Instance)
 	local countLabel: TextLabel
 	local scanTick = source(0)
 	local todoItems = {}
+	const scriptInstances: { LuaSourceContainer } = {}
+	const indexedScripts: { [LuaSourceContainer]: boolean } = {}
+	const scriptConnections: { RBXScriptConnection } = {}
+
+	const function trackScript(instance: Instance)
+		if not isScript(instance) then
+			return
+		end
+		const scriptInstance = instance :: LuaSourceContainer
+		if indexedScripts[scriptInstance] == true then
+			return
+		end
+		indexedScripts[scriptInstance] = true
+		table.insert(scriptInstances, scriptInstance)
+	end
+
+	const function untrackScript(instance: Instance)
+		if not isScript(instance) then
+			return
+		end
+		const scriptInstance = instance :: LuaSourceContainer
+		indexedScripts[scriptInstance] = nil
+		const index = table.find(scriptInstances, scriptInstance)
+		if index ~= nil then
+			table.remove(scriptInstances, index)
+		end
+	end
+
+	for _, instance in game:GetDescendants() do
+		trackScript(instance)
+	end
+	table.insert(scriptConnections, game.DescendantAdded:Connect(trackScript))
+	table.insert(scriptConnections, game.DescendantRemoving:Connect(untrackScript))
 
 	const function scanTodos(): { TodoItem }
 		const items = {}
-		for _, instance in game:GetDescendants() do
-			if not isScript(instance) then
-				continue
-			end
-
-			const scriptInstance = instance :: LuaSourceContainer
+		for _, scriptInstance in scriptInstances do
 			local sourceText = ""
 			local ok = pcall(function()
 				sourceText = ScriptEditorService:GetEditorSource(scriptInstance)
 			end)
-			if not ok then
+			if not ok or sourceText == "" then
 				sourceText = scriptInstance.Source
 			end
 
@@ -189,7 +217,7 @@ const function createPanel(parent: Instance)
 		for _, item in todoItems do
 			rowIndex += 1
 			const rowHeight = math.max(ROW_HEIGHT, #string.split(item.text, "\n") * 20 + 12)
-			const row = new("TextButton")({
+			new("TextButton")({
 				Name = "TodoRow",
 				LayoutOrder = rowIndex,
 				Size = UDim2.new(1, 0, 0, rowHeight),
@@ -207,7 +235,7 @@ const function createPanel(parent: Instance)
 				createSeparator(SCRIPT_COLUMN + LINE_COLUMN),
 				new("TextLabel")({
 					Name = "Script",
-					Size = UDim2.new(SCRIPT_COLUMN, 0, 1, 0),
+					Size = UDim2.fromScale(SCRIPT_COLUMN, 1),
 					BackgroundTransparency = 1,
 					Text = "",
 					TextXAlignment = Enum.TextXAlignment.Left,
@@ -225,7 +253,7 @@ const function createPanel(parent: Instance)
 				}),
 				new("TextLabel")({
 					Name = "Line",
-					Size = UDim2.new(LINE_COLUMN, 0, 1, 0),
+					Size = UDim2.fromScale(LINE_COLUMN, 1),
 					Position = UDim2.fromScale(SCRIPT_COLUMN, 0),
 					BackgroundTransparency = 1,
 					Text = tostring(item.line),
@@ -236,7 +264,7 @@ const function createPanel(parent: Instance)
 				}),
 				new("TextLabel")({
 					Name = "Text",
-					Size = UDim2.new(1 - SCRIPT_COLUMN - LINE_COLUMN, 0, 1, 0),
+					Size = UDim2.fromScale(1 - SCRIPT_COLUMN - LINE_COLUMN, 1),
 					Position = UDim2.fromScale(SCRIPT_COLUMN + LINE_COLUMN, 0),
 					BackgroundTransparency = 1,
 					Text = item.text,
@@ -367,7 +395,7 @@ const function createPanel(parent: Instance)
 						createSeparator(SCRIPT_COLUMN + LINE_COLUMN),
 						new("TextLabel")({
 							Name = "Script",
-							Size = UDim2.new(SCRIPT_COLUMN, 0, 1, 0),
+							Size = UDim2.fromScale(SCRIPT_COLUMN, 1),
 							BackgroundTransparency = 1,
 							Text = "Script",
 							TextColor3 = Theme.TEXT,
@@ -376,7 +404,7 @@ const function createPanel(parent: Instance)
 						}),
 						new("TextLabel")({
 							Name = "Line",
-							Size = UDim2.new(LINE_COLUMN, 0, 1, 0),
+							Size = UDim2.fromScale(LINE_COLUMN, 1),
 							Position = UDim2.fromScale(SCRIPT_COLUMN, 0),
 							BackgroundTransparency = 1,
 							Text = "Line",
@@ -386,7 +414,7 @@ const function createPanel(parent: Instance)
 						}),
 						new("TextLabel")({
 							Name = "Text",
-							Size = UDim2.new(1 - SCRIPT_COLUMN - LINE_COLUMN, 0, 1, 0),
+							Size = UDim2.fromScale(1 - SCRIPT_COLUMN - LINE_COLUMN, 1),
 							Position = UDim2.fromScale(SCRIPT_COLUMN + LINE_COLUMN, 0),
 							BackgroundTransparency = 1,
 							Text = "Comment",
@@ -430,6 +458,9 @@ const function createPanel(parent: Instance)
 	return {
 		refresh = refresh,
 		destroy = function()
+			for _, connection in scriptConnections do
+				connection:Disconnect()
+			end
 			destroyUi()
 		end,
 	}

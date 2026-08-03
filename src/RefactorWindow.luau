@@ -23,7 +23,7 @@ export type PendingRefactor = {
 	message: string,
 	usages: { ImportUsage },
 	acceptText: string?,
-	accept: (() -> ())?,
+	accept: (() -> boolean)?,
 	dismiss: () -> (),
 }
 
@@ -192,7 +192,7 @@ const function createPanel(parent: Instance, queue: RefactorQueue, onDone: (() -
 				createSeparator(SCRIPT_COLUMN),
 				new("TextLabel")({
 					Name = "Script",
-					Size = UDim2.new(SCRIPT_COLUMN, 0, 1, 0),
+					Size = UDim2.fromScale(SCRIPT_COLUMN, 1),
 					BackgroundTransparency = 1,
 					Text = "",
 					TextXAlignment = Enum.TextXAlignment.Left,
@@ -210,7 +210,7 @@ const function createPanel(parent: Instance, queue: RefactorQueue, onDone: (() -
 				}),
 				new("TextLabel")({
 					Name = "Line",
-					Size = UDim2.new(1 - SCRIPT_COLUMN, 0, 1, 0),
+					Size = UDim2.fromScale(1 - SCRIPT_COLUMN, 1),
 					Position = UDim2.fromScale(SCRIPT_COLUMN, 0),
 					BackgroundTransparency = 1,
 					Text = tostring(usage.line),
@@ -224,8 +224,10 @@ const function createPanel(parent: Instance, queue: RefactorQueue, onDone: (() -
 		listFrame.Size = UDim2.new(1, 0, 0, math.max(ROW_HEIGHT, listLayout.AbsoluteContentSize.Y))
 		if item.accept ~= nil then
 			createButton(buttonFrame, item.acceptText or "Yes", 1, true, function()
-				(item.accept :: () -> ())()
-				queue.dismiss(item)
+				const accepted = (item.accept :: () -> boolean)()
+				if accepted then
+					queue.dismiss(item)
+				end
 			end)
 			createButton(buttonFrame, "No", 2, false, function()
 				queue.dismiss(item)
@@ -344,7 +346,7 @@ const function createPanel(parent: Instance, queue: RefactorQueue, onDone: (() -
 						createSeparator(SCRIPT_COLUMN),
 						new("TextLabel")({
 							Name = "Script",
-							Size = UDim2.new(SCRIPT_COLUMN, 0, 1, 0),
+							Size = UDim2.fromScale(SCRIPT_COLUMN, 1),
 							BackgroundTransparency = 1,
 							Text = "Affected file",
 							TextXAlignment = Enum.TextXAlignment.Left,
@@ -359,7 +361,7 @@ const function createPanel(parent: Instance, queue: RefactorQueue, onDone: (() -
 						}),
 						new("TextLabel")({
 							Name = "Line",
-							Size = UDim2.new(1 - SCRIPT_COLUMN, 0, 1, 0),
+							Size = UDim2.fromScale(1 - SCRIPT_COLUMN, 1),
 							Position = UDim2.fromScale(SCRIPT_COLUMN, 0),
 							BackgroundTransparency = 1,
 							Text = "Line",

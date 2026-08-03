@@ -12,6 +12,7 @@ export type DropdownSetting = {
 	row: Frame,
 	dropdown: Frame,
 	label: TextLabel,
+	setEnabled: (boolean) -> (),
 	close: () -> (),
 	isOpen: () -> boolean,
 	getOpenHeight: () -> number,
@@ -27,6 +28,7 @@ const function DropdownSetting(
 ): DropdownSetting
 	const open = source(false)
 	const selected = source("")
+	const enabled = source(true)
 	const row = BaseSetting({
 		parent = parent,
 		name = name,
@@ -47,8 +49,11 @@ const function DropdownSetting(
 		Font = Enum.Font.SourceSans,
 		TextSize = 15,
 		TextColor3 = Theme.TEXT,
-		AutoButtonColor = true,
+		AutoButtonColor = enabled,
 		Activated = function()
+			if not enabled() then
+				return
+			end
 			open(not open())
 		end,
 		Parent = row,
@@ -110,8 +115,11 @@ const function DropdownSetting(
 			TextColor3 = Theme.TEXT,
 			Font = Enum.Font.SourceSans,
 			TextSize = 15,
-			AutoButtonColor = true,
+			AutoButtonColor = enabled,
 			Activated = function()
+				if not enabled() then
+					return
+				end
 				onSelect(option)
 				open(false)
 			end,
@@ -123,11 +131,16 @@ const function DropdownSetting(
 
 	effect(function()
 		const isOpen = open()
+		const isEnabled = enabled()
 		Theme.tween(dropdownFrame, {
 			Size = UDim2.new(1, 0, 0, if isOpen then openHeight else 0),
 		})
+		button.Active = isEnabled
+		button.AutoButtonColor = isEnabled
+		dropdownFrame.Active = isEnabled
+		dropdownFrame.Visible = isEnabled
 		Theme.tween(arrowIcon, {
-			Rotation = if isOpen then 0 else -90,
+			Rotation = if isOpen and isEnabled then 0 else -90,
 		})
 		if onToggle ~= nil then
 			onToggle()
@@ -139,6 +152,7 @@ const function DropdownSetting(
 		row = row,
 		dropdown = dropdownFrame,
 		label = textLabel,
+		setEnabled = enabled,
 		close = function()
 			open(false)
 		end,

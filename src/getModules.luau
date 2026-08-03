@@ -60,16 +60,16 @@ const function isInConfiguredClientDirectory(instance: Instance, settings: Types
 end
 
 const function getContext(container: LuaSourceContainer, settings: Types.Settings): Context
-	if container:IsA("LocalScript") then -- do this check first as localscript inherits script
+	if isInConfiguredClientDirectory(container, settings) then
+		return "client"
+	end
+	if container:IsA("LocalScript") then
 		return "client"
 	elseif container:IsA("Script") then
 		if container.RunContext == Enum.RunContext.Client then
 			return "client"
 		end
 		return "server"
-	end
-	if isInConfiguredClientDirectory(container, settings) then
-		return "client"
 	end
 	for _, dir in serverDirectories do
 		if container:IsDescendantOf(dir) then

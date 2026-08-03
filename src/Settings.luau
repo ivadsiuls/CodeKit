@@ -11,7 +11,6 @@ const DEFAULT_SETTINGS: Types.Settings = {
 	enabled = true,
 	autoModules = true,
 	requireMode = "global",
-	callStyle = "parentheses",
 	stringQuote = "double",
 	autocompletePrefix = ":",
 	autoServices = true,
@@ -82,11 +81,6 @@ const VALID_IMPORT_FOLDER_DEPTHS = {
 const VALID_IMPORT_PLACEMENTS = {
 	Organized = true,
 	["At Cursor"] = true,
-}
-
-const VALID_CALL_STYLES = {
-	parentheses = true,
-	bare = true,
 }
 
 const VALID_STRING_QUOTES = {
@@ -235,7 +229,6 @@ const function normalizeSettings(value: any): Types.Settings
 		enabled = value.enabled ~= false,
 		autoModules = value.autoModules ~= false,
 		requireMode = requireMode,
-		callStyle = normalizeEnum(value.callStyle, DEFAULT_SETTINGS.callStyle, VALID_CALL_STYLES) :: Types.CallStyle,
 		stringQuote = normalizeEnum(value.stringQuote, DEFAULT_SETTINGS.stringQuote, VALID_STRING_QUOTES) :: Types.StringQuote,
 		autocompletePrefix = autocompletePrefix,
 		autoServices = value.autoServices ~= false,
@@ -342,6 +335,7 @@ const function create(plugin: Plugin)
 			globalSettings = normalizeSettings(DEFAULT_SETTINGS)
 			workspaceSettings = nil
 			Data.deleteWorkspace(WORKSPACE_SETTINGS_NAME)
+			Data.save(plugin, LEGACY_SETTING_KEY, {})
 			Data.save(plugin, GLOBAL_SETTING_KEY, globalSettings)
 			fireChanged()
 		end,
