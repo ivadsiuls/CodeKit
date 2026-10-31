@@ -11,3 +11,5 @@
 <p align="center">
 	<a href="https://files.catbox.moe/iqkyjx.mp4">▶ Watch the demo</a>
 </p>
+
+Temporary, non-archivable modules such as Nevermore loader links are excluded from import refactors. Changes made during undo recordings named `MCP: ...` also skip refactor prompts. MCP integrations that do not mark their recordings cannot be distinguished from other edits and retain the normal behavior.

@@ -5,6 +5,7 @@
 
 const ScriptEditorService = game:GetService("ScriptEditorService")
 const RunService = game:GetService("RunService")
+const ChangeHistoryService = game:GetService("ChangeHistoryService")
 
 if not RunService:IsEdit() then
 	return
@@ -1797,6 +1798,21 @@ const function enqueueRefactor(item)
 	openRefactorWindow()
 end
 
+const activeMcpRecordings: { [string]: boolean } = {}
+
+const function onRecordingStarted(name: string)
+	if string.sub(name, 1, 5) == "MCP: " then
+		activeMcpRecordings[name] = true
+	end
+end
+
+const function onRecordingFinished(name: string)
+	activeMcpRecordings[name] = nil
+end
+
+table.insert(connections, ChangeHistoryService.OnRecordingStarted:Connect(onRecordingStarted))
+table.insert(connections, ChangeHistoryService.OnRecordingFinished:Connect(onRecordingFinished))
+
 local moduleSnapshots: { [ModuleScript]: ModuleSnapshot } = {}
 local moduleConnections: { [ModuleScript]: { RBXScriptConnection } } = {}
 
@@ -1808,12 +1824,16 @@ const function updateModuleSnapshot(module: ModuleScript)
 	}
 end
 
-const function handleModuleChanged(module: ModuleScript)
+const function handleModuleChanged(module: ModuleScript, suppressRefactor: boolean)
 	if RunService:IsRunning() then
 		return
 	end
 	const snapshot = moduleSnapshots[module]
 	if snapshot == nil or module.Parent == nil then
+		return
+	end
+	if suppressRefactor or not module.Archivable then
+		updateModuleSnapshot(module)
 		return
 	end
 	if snapshot.name == module.Name and snapshot.parent == module.Parent and snapshot.path == module:GetFullName() then
@@ -1842,8 +1862,8 @@ const function handleModuleChanged(module: ModuleScript)
 	})
 end
 
-const function handleModuleDeleted(module: ModuleScript, snapshot: ModuleSnapshot)
-	if RunService:IsRunning() then
+const function handleModuleDeleted(module: ModuleScript, snapshot: ModuleSnapshot, suppressRefactor: boolean)
+	if RunService:IsRunning() or suppressRefactor or not module.Archivable then
 		return
 	end
 	const usages = findRequireUsages(snapshot.path, module)
@@ -1872,7 +1892,8 @@ const function untrackModule(module: ModuleScript)
 end
 
 const function trackModule(module: ModuleScript)
-	if RunService:IsRunning() then
+	-- Temporary loader links are not user-owned modules and should never trigger refactors.
+	if RunService:IsRunning() or not module.Archivable then
 		return
 	end
 	if moduleConnections[module] ~= nil then
@@ -1886,9 +1907,10 @@ const function trackModule(module: ModuleScript)
 			if unloading or RunService:IsRunning() then
 				return
 			end
+			const suppressRefactor = next(activeMcpRecordings) ~= nil
 			task.defer(function()
 				if not unloading and not RunService:IsRunning() and module.Parent ~= nil then
-					handleModuleChanged(module)
+					handleModuleChanged(module, suppressRefactor)
 				end
 			end)
 		end),
@@ -1896,11 +1918,12 @@ const function trackModule(module: ModuleScript)
 			if unloading or RunService:IsRunning() then
 				return
 			end
+			const suppressRefactor = next(activeMcpRecordings) ~= nil
 			task.defer(function()
 				if unloading or RunService:IsRunning() or module.Parent == nil then
 					return
 				end
-				handleModuleChanged(module)
+				handleModuleChanged(module, suppressRefactor)
 			end)
 		end),
 	}
@@ -2442,9 +2465,10 @@ table.insert(connections, game.DescendantRemoving:Connect(function(instance)
 	if instance:IsA("ModuleScript") then
 		const module = instance :: ModuleScript
 		const snapshot = moduleSnapshots[module]
+		const suppressRefactor = next(activeMcpRecordings) ~= nil
 		task.defer(function()
 			if not RunService:IsRunning() and module.Parent == nil and snapshot ~= nil then
-				handleModuleDeleted(module, snapshot)
+				handleModuleDeleted(module, snapshot, suppressRefactor)
 				untrackModule(module)
 			end
 		end)
